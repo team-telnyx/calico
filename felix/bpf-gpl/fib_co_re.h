@@ -11,6 +11,13 @@
 #endif
 #include <linux/if_packet.h>
 
+/* Forwarding only accesses L2/L3; IPv4 later fragments have no L4 header. */
+#ifdef IPVER6
+#define CALI_FIB_NH_SIZE UDP_SIZE
+#else
+#define CALI_FIB_NH_SIZE 0
+#endif
+
 static CALI_BPF_INLINE int make_room_for_l2_header(struct cali_tc_ctx *ctx)
 {
 	int rc = bpf_skb_change_head(ctx->skb, ETH_HLEN, 0);
@@ -18,7 +25,7 @@ static CALI_BPF_INLINE int make_room_for_l2_header(struct cali_tc_ctx *ctx)
 		CALI_DEBUG("bpf_skb_change_head failed %d.", rc);
 		return rc;
 	}
-	if (skb_refresh_validate_ptrs(ctx, UDP_SIZE)) {
+	if (skb_refresh_validate_ptrs(ctx, CALI_FIB_NH_SIZE)) {
 		CALI_DEBUG("Too short");
 		return -1;
 	}
@@ -112,7 +119,7 @@ static CALI_BPF_INLINE int forward_or_drop(struct cali_tc_ctx *ctx)
 		}
 
 		/* Revalidate the access to the packet */
-		if (skb_refresh_validate_ptrs(ctx, UDP_SIZE)) {
+		if (skb_refresh_validate_ptrs(ctx, CALI_FIB_NH_SIZE)) {
 			deny_reason(ctx, CALI_REASON_SHORT);
 			CALI_DEBUG("Too short");
 			goto deny;
@@ -309,7 +316,7 @@ try_fib_external:
 	// Try a short-circuit FIB lookup.
 	if (fwd_fib(&ctx->state->fwd)) {
 		/* Revalidate the access to the packet */
-		if (skb_refresh_validate_ptrs(ctx, UDP_SIZE)) {
+		if (skb_refresh_validate_ptrs(ctx, CALI_FIB_NH_SIZE)) {
 			deny_reason(ctx, CALI_REASON_SHORT);
 			CALI_DEBUG("Too short");
 			goto deny;

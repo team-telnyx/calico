@@ -77,6 +77,18 @@ static CALI_BPF_INLINE int bpf_load_bytes(struct cali_tc_ctx *ctx, __u32 offset,
  * in the state (struct cali_tc_state). */
 static CALI_BPF_INLINE int tc_state_fill_from_nexthdr(struct cali_tc_ctx *ctx, bool decap)
 {
+#if !defined(IPVER6) && !CALI_F_XDP
+	/* Later fragments must have been dispatched to fragment CT/reassembly. */
+	if (ip_is_frag(ip_hdr(ctx)) && !ip_is_first_frag(ip_hdr(ctx))) {
+		goto deny;
+	}
+	if (ip_is_first_frag(ip_hdr(ctx)) &&
+			bpf_ntohs(ip_hdr(ctx)->tot_len) < ctx->ipheader_len +
+			(ctx->state->ip_proto == IPPROTO_TCP ? TCP_SIZE : UDP_SIZE)) {
+		deny_reason(ctx, CALI_REASON_SHORT);
+		goto deny;
+	}
+#endif
 	if (ctx->ipheader_len == 20) {
 		switch (ctx->state->ip_proto) {
 		case IPPROTO_TCP:
@@ -110,6 +122,12 @@ static CALI_BPF_INLINE int tc_state_fill_from_nexthdr(struct cali_tc_ctx *ctx, b
 			}
 			break;
 		default:
+#if !defined(IPVER6) && !CALI_F_XDP
+			if (skb_refresh_validate_ptrs(ctx, UDP_SIZE)) {
+				deny_reason(ctx, CALI_REASON_SHORT);
+				goto deny;
+			}
+#endif
 			__builtin_memcpy(ctx->scratch->l4, ((void*)ip_hdr(ctx))+IP_SIZE, UDP_SIZE);
 			break;
 		}

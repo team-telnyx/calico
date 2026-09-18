@@ -218,6 +218,18 @@ static CALI_BPF_INLINE bool frags4_handle(struct cali_tc_ctx *ctx)
 	int i;
 	int r_off = skb_l4hdr_offset(ctx);
 	bool more_frags = bpf_ntohs(ip_hdr(ctx)->frag_off) & 0x2000;
+	int ip_end = skb_iphdr_offset(ctx) + bpf_ntohs(ip_hdr(ctx)->tot_len);
+	if (ip_end <= r_off || ip_end > ctx->skb->len) {
+		goto out;
+	}
+	/* Trim Ethernet padding before storing fragments.  Keeping the loop below
+	 * bounded by skb->len also avoids extra verifier states for a second end. */
+	if (ip_end < ctx->skb->len) {
+		if (bpf_skb_change_tail(ctx->skb, ip_end, 0) ||
+				skb_refresh_validate_ptrs(ctx, 0)) {
+			goto out;
+		}
+	}
 
 	/* When we get a fragment, it may be large than the storage in the map.
 	 * We may need to break it into multiple fragments to be able to store

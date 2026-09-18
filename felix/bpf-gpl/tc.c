@@ -181,7 +181,7 @@ int calico_tc_main(struct __sk_buff *skb)
 	}
 
 	/* Parse the packet as far as the IP header; as a side-effect this validates the packet size
-	 * is large enough for UDP. */
+	 * covers the IP header (and L4 for first/unfragmented packets). */
 	switch (parse_packet_ip(ctx)) {
 #ifdef IPVER6
 	case PARSING_OK_V6:
@@ -244,6 +244,24 @@ static CALI_BPF_INLINE int pre_policy_processing(struct cali_tc_ctx *ctx)
 	/* Copy fields that are needed by downstream programs from the packet to the state. */
 	tc_state_fill_from_iphdr(ctx);
 
+#ifndef IPVER6
+	if ((CALI_F_FROM_HOST || CALI_F_FROM_WEP) && ip_is_frag(ip_hdr(ctx)) && !ip_is_first_frag(ip_hdr(ctx))) {
+		struct frags4_fwd_value *frag_ct_val = frags4_lookup_ct(ctx);
+		if (frag_ct_val) {
+			ctx->state->sport = frag_ct_val->sport;
+			ctx->state->dport = frag_ct_val->dport;
+			ctx->state->fwd.mark = frag_ct_val->seen_mark;
+			if (ip_is_last_frag(ip_hdr(ctx))) {
+				frags4_remove_ct(ctx);
+			}
+			goto allow;
+		}
+
+		deny_reason(ctx, CALI_REASON_FRAG_REORDER);
+		goto deny;
+	}
+#endif
+
 	if (CALI_F_LO && (GLOBAL_FLAGS & CALI_GLOBALS_LO_UDP_ONLY) && ctx->state->ip_proto != IPPROTO_UDP) {
 		CALI_DEBUG("Allowing because it is not UDP");
 		goto allow;
@@ -289,24 +307,6 @@ static CALI_BPF_INLINE int pre_policy_processing(struct cali_tc_ctx *ctx)
 			goto allow;
 		}
 	}
-
-#ifndef IPVER6
-	if ((CALI_F_FROM_HOST || CALI_F_FROM_WEP) && ip_is_frag(ip_hdr(ctx)) && !ip_is_first_frag(ip_hdr(ctx))) {
-		struct frags4_fwd_value *frag_ct_val = frags4_lookup_ct(ctx);
-		if (frag_ct_val) {
-			ctx->state->sport = frag_ct_val->sport;
-			ctx->state->dport = frag_ct_val->dport;
-			ctx->state->fwd.mark = frag_ct_val->seen_mark;
-			if (ip_is_last_frag(ip_hdr(ctx))) {
-				frags4_remove_ct(ctx);
-			}
-			goto allow;
-		}
-
-		deny_reason(ctx, CALI_REASON_FRAG_REORDER);
-		goto deny;
-	}
-#endif
 
 	ctx->state->pol_rc = CALI_POL_NO_MATCH;
 
@@ -2225,9 +2225,7 @@ int calico_tc_skb_ipv4_frag(struct __sk_buff *skb)
 	CALI_DEBUG("Entering calico_tc_skb_ipv4_frag");
 	CALI_DEBUG("iphdr_offset %d ihl %d", skb_iphdr_offset(ctx), ctx->ipheader_len);
 
-	if (skb_refresh_validate_ptrs(ctx, UDP_SIZE)) {
-		deny_reason(ctx, CALI_REASON_SHORT);
-		CALI_DEBUG("Too short");
+	if (parse_packet_ip(ctx) != PARSING_OK) {
 		goto deny;
 	}
 

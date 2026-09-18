@@ -60,7 +60,7 @@ static CALI_BPF_INLINE int parse_packet_ip_v4(struct cali_tc_ctx *ctx)
 	// In TC programs, parse packet and validate its size. This is
 	// already done for XDP programs at the beginning of the function.
 #if !CALI_F_XDP
-	if (skb_refresh_validate_ptrs(ctx, UDP_SIZE)) {
+	if (skb_refresh_validate_ptrs(ctx, 0)) {
 		deny_reason(ctx, CALI_REASON_SHORT);
 		CALI_DEBUG("Too short");
 		goto deny;
@@ -76,6 +76,28 @@ static CALI_BPF_INLINE int parse_packet_ip_v4(struct cali_tc_ctx *ctx)
 		goto deny;
 	}
 
+#if !CALI_F_XDP
+	if (ip_is_frag(ip_hdr(ctx))) {
+		/* Fragment data ends at tot_len, not at the end of a padded frame. */
+		int len = bpf_ntohs(ip_hdr(ctx)->tot_len);
+		int ihl = ip_hdr(ctx)->ihl * 4;
+		if (len <= ihl ||
+			skb_iphdr_offset(ctx) + len > ctx->skb->len ||
+			((ip_hdr(ctx)->frag_off & bpf_htons(0x2000)) && ((len - ihl) & 7))) {
+			deny_reason(ctx, CALI_REASON_IP_MALFORMED);
+			goto deny;
+		}
+		if (!ip_is_first_frag(ip_hdr(ctx))) {
+			return PARSING_OK;
+		}
+	}
+
+	/* Preserve the minimum next-header validation for first/unfragmented packets. */
+	if (skb_refresh_validate_ptrs(ctx, UDP_SIZE)) {
+		deny_reason(ctx, CALI_REASON_SHORT);
+		goto deny;
+	}
+#endif /* !CALI_F_XDP */
 	return PARSING_OK;
 
 allow_no_fib:
