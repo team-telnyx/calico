@@ -320,8 +320,12 @@ try_fib_external:
 
 	// Try a short-circuit FIB lookup.
 	if (fwd_fib(&ctx->state->fwd)) {
-		/* Revalidate the access to the packet */
-		if (skb_refresh_validate_ptrs(ctx, UDP_SIZE)) {
+		/* Revalidate the access to the packet. Only the IP header is read
+		 * below, so tolerate fragments that carry no L4 header - otherwise a
+		 * short trailing fragment would be dropped here on its way out of a
+		 * workload.
+		 */
+		if (skb_refresh_validate_ptrs_frag(ctx, UDP_SIZE)) {
 			deny_reason(ctx, CALI_REASON_SHORT);
 			CALI_DEBUG("Too short");
 			goto deny;
