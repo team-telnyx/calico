@@ -219,14 +219,27 @@ static CALI_BPF_INLINE bool frags4_handle(struct cali_tc_ctx *ctx)
 	int r_off = skb_l4hdr_offset(ctx);
 	bool more_frags = bpf_ntohs(ip_hdr(ctx)->frag_off) & 0x2000;
 
+	/* The fragment's data ends where the IP header says it ends, not where the
+	 * skb ends. A frame shorter than the Ethernet minimum arrives padded and the
+	 * padding is still part of skb->len here - the IP stack trims to tot_len,
+	 * but we run before it. Sizing the fragment from skb->len stores the padding
+	 * as payload and the reassembled datagram grows by that many zero bytes
+	 * (seen as 1473 -> 1494 and 1480 -> 1494 byte UDP payloads).
+	 */
+	int end = skb_iphdr_offset(ctx) + bpf_ntohs(ip_hdr(ctx)->tot_len);
+	if (end > ctx->skb->len) {
+		CALI_DEBUG("IP FRAG: tot_len runs past the end of the skb, truncated fragment");
+		goto out;
+	}
+
 	/* When we get a fragment, it may be large than the storage in the map.
 	 * We may need to break it into multiple fragments to be able to store
 	 * it.
 	 */
 	for (i = 0; i < 10; i++) {
 		int sz = MAX_FRAG;
-		if (r_off + sz >= ctx->skb->len) {
-			sz = ctx->skb->len - r_off;
+		if (r_off + sz >= end) {
+			sz = end - r_off;
 		}
 		if (sz > MAX_FRAG) {
 			sz = MAX_FRAG;
@@ -240,7 +253,7 @@ static CALI_BPF_INLINE bool frags4_handle(struct cali_tc_ctx *ctx)
 			goto out;
 		}
 		v->len = (__u16)sz;
-		v->more_frags = more_frags || r_off + sz < ctx->skb->len;
+		v->more_frags = more_frags || r_off + sz < end;
 		CALI_DEBUG("IP FRAG: frg off %d", k.offset);
 		CALI_DEBUG("IP FRAG: frg size %d r_off %d", sz, r_off);
 
@@ -251,7 +264,7 @@ static CALI_BPF_INLINE bool frags4_handle(struct cali_tc_ctx *ctx)
 
 		r_off += sz;
 		k.offset += sz;
-		if (r_off >= ctx->skb->len) {
+		if (r_off >= end) {
 			break;
 		}
 	}
