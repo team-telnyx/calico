@@ -77,7 +77,16 @@ static CALI_BPF_INLINE int bpf_load_bytes(struct cali_tc_ctx *ctx, __u32 offset,
  * in the state (struct cali_tc_state). */
 static CALI_BPF_INLINE int tc_state_fill_from_nexthdr(struct cali_tc_ctx *ctx, bool decap)
 {
-	if (ctx->ipheader_len == 20) {
+	if (ip_is_frag_no_l4(ip_hdr(ctx))) {
+		/* A fragment with a non-zero offset has no L4 header - the bytes
+		 * following the IP header are payload and the packet may be too short
+		 * to hold an L4 header at all. Zero the L4 scratch area instead of
+		 * reading the packet; the real ports are recovered from the fragment
+		 * tracking table in pre_policy_processing(), which handles every
+		 * non-first fragment that reaches this point.
+		 */
+		__builtin_memset(ctx->scratch->l4, 0, UDP_SIZE);
+	} else if (ctx->ipheader_len == 20) {
 		switch (ctx->state->ip_proto) {
 		case IPPROTO_TCP:
 			if (skb_refresh_validate_ptrs(ctx, TCP_SIZE)) {
@@ -110,6 +119,18 @@ static CALI_BPF_INLINE int tc_state_fill_from_nexthdr(struct cali_tc_ctx *ctx, b
 			}
 			break;
 		default:
+			/* Unlike the TCP/UDP cases above, this used to rely on
+			 * parse_packet_ip() having validated UDP_SIZE bytes of L4 header.
+			 * That is no longer unconditional (fragments with a non-zero
+			 * offset carry no L4 header), so validate explicitly - the
+			 * verifier cannot correlate the check above with the one in
+			 * parse_packet_ip().
+			 */
+			if (skb_refresh_validate_ptrs(ctx, UDP_SIZE)) {
+				deny_reason(ctx, CALI_REASON_SHORT);
+				CALI_DEBUG("Too short");
+				goto deny;
+			}
 			__builtin_memcpy(ctx->scratch->l4, ((void*)ip_hdr(ctx))+IP_SIZE, UDP_SIZE);
 			break;
 		}

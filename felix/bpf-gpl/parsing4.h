@@ -60,7 +60,13 @@ static CALI_BPF_INLINE int parse_packet_ip_v4(struct cali_tc_ctx *ctx)
 	// In TC programs, parse packet and validate its size. This is
 	// already done for XDP programs at the beginning of the function.
 #if !CALI_F_XDP
-	if (skb_refresh_validate_ptrs(ctx, UDP_SIZE)) {
+	/* We cannot insist on UDP_SIZE bytes of L4 header for every packet: a
+	 * fragment with a non-zero fragment offset carries no L4 header and the
+	 * last fragment of a datagram may be as short as IP header + 1 byte. Such
+	 * fragments are matched against the fragment tracking table later, in
+	 * pre_policy_processing().
+	 */
+	if (skb_refresh_validate_ptrs_frag(ctx, UDP_SIZE)) {
 		deny_reason(ctx, CALI_REASON_SHORT);
 		CALI_DEBUG("Too short");
 		goto deny;
