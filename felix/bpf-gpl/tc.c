@@ -2245,6 +2245,39 @@ int calico_tc_skb_ipv4_frag(struct __sk_buff *skb)
 		goto deny;
 	}
 
+	/* A frame shorter than the Ethernet minimum arrives padded, and the padding
+	 * is still part of skb->len here: the IP stack trims to tot_len in ip_rcv(),
+	 * but we run before it. frags4_handle() sizes the fragment from skb->len, so
+	 * the padding would be stored as payload and the reassembled datagram would
+	 * grow by that many zero bytes (seen live as 1473 -> 1494 byte UDP payloads).
+	 *
+	 * Trim once, here, rather than bounding the copy loop by tot_len: a second
+	 * packet-derived bound inside that loop pushes the program past the
+	 * verifier's 1M instruction limit.
+	 */
+	{
+		__u32 ip_end = skb_iphdr_offset(ctx) + bpf_ntohs(ip_hdr(ctx)->tot_len);
+
+		if (ip_end > ctx->skb->len) {
+			deny_reason(ctx, CALI_REASON_SHORT);
+			CALI_DEBUG("IP FRAG: tot_len runs past the end of the skb");
+			goto deny;
+		}
+		if (ip_end < ctx->skb->len) {
+			if (bpf_skb_change_tail(ctx->skb, ip_end, 0)) {
+				deny_reason(ctx, CALI_REASON_SHORT);
+				CALI_DEBUG("IP FRAG: failed to trim link-layer padding");
+				goto deny;
+			}
+			/* bpf_skb_change_tail() invalidates the packet pointers. */
+			if (skb_refresh_validate_ptrs_frag(ctx, UDP_SIZE)) {
+				deny_reason(ctx, CALI_REASON_SHORT);
+				CALI_DEBUG("Too short");
+				goto deny;
+			}
+		}
+	}
+
 	tc_state_fill_from_iphdr_v4(ctx);
 
 	if (!frags4_handle(ctx)) {
