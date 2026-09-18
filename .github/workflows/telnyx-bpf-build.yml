@@ -139,11 +139,19 @@ jobs:
       - name: Retag and push to ghcr.io
         run: |
           set -eux
+          # CONFIRM=true is required: without it lib.Makefile:605-615 rewrites
+          # DOCKER to `echo [DRY RUN] docker`, so the push silently does nothing
+          # while every step still reports success.
           make -C node retag-build-images-with-registries push-images-to-registries \
             IMAGETAG=${{ steps.tag.outputs.tag }} \
             DEV_REGISTRIES="$DEV_REGISTRIES" \
-            VALIDARCHES=amd64
+            VALIDARCHES=amd64 \
+            CONFIRM=true
 
       - name: Report the image reference
         run: |
-          echo "pushed: ghcr.io/team-telnyx/calico/node:${{ steps.tag.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          set -eux
+          REF=ghcr.io/team-telnyx/calico/node:${{ steps.tag.outputs.tag }}
+          # verify the manifest really exists rather than trusting the push step
+          docker manifest inspect "$REF" > /dev/null
+          echo "pushed and verified: $REF" >> "$GITHUB_STEP_SUMMARY"
