@@ -2232,7 +2232,14 @@ int calico_tc_skb_ipv4_frag(struct __sk_buff *skb)
 	CALI_DEBUG("Entering calico_tc_skb_ipv4_frag");
 	CALI_DEBUG("iphdr_offset %d ihl %d", skb_iphdr_offset(ctx), ctx->ipheader_len);
 
-	if (skb_refresh_validate_ptrs(ctx, UDP_SIZE)) {
+	/* Only the IP header is needed for a fragment with a non-zero offset;
+	 * frags4_handle() copies the payload out with bpf_skb_load_bytes() and the
+	 * reassembled packet is re-parsed (and fully revalidated) by
+	 * frags4_try_assemble(). Insisting on an L4 header here would drop the last
+	 * fragment of a datagram when it carries fewer than UDP_SIZE bytes of
+	 * payload and reassembly would never complete.
+	 */
+	if (skb_refresh_validate_ptrs_frag(ctx, UDP_SIZE)) {
 		deny_reason(ctx, CALI_REASON_SHORT);
 		CALI_DEBUG("Too short");
 		goto deny;

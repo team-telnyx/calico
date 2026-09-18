@@ -175,6 +175,32 @@ static CALI_BPF_INLINE int skb_refresh_validate_ptrs(struct cali_tc_ctx *ctx, lo
 	return 0;
 }
 
+/* skb_refresh_validate_ptrs_frag is like skb_refresh_validate_ptrs() except that
+ * it does not insist on nh_len bytes of L4 header being present when the packet
+ * is an IPv4 fragment with a non-zero fragment offset. Such a fragment carries
+ * no L4 header at all and the last fragment of a datagram may carry as little as
+ * a single byte of payload, that is, it may be shorter than IP header + nh_len.
+ *
+ * Callers must not access the L4 header after a successful validation without
+ * checking ip_is_frag_no_l4() themselves.
+ */
+static CALI_BPF_INLINE int skb_refresh_validate_ptrs_frag(struct cali_tc_ctx *ctx, long nh_len)
+{
+#ifndef IPVER6
+	/* Validate access to the IP header first so that we can look at the
+	 * fragment offset.
+	 */
+	int err = skb_refresh_validate_ptrs(ctx, 0);
+	if (err) {
+		return err;
+	}
+	if (ip_is_frag_no_l4(ip_hdr(ctx))) {
+		return 0;
+	}
+#endif
+	return skb_refresh_validate_ptrs(ctx, nh_len);
+}
+
 #define skb_ptr_after(skb, ptr) ((void *)((ptr) + 1))
 #define skb_seen(skb) (((skb)->mark & CALI_SKB_MARK_SEEN_MASK) == CALI_SKB_MARK_SEEN)
 

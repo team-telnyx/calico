@@ -263,6 +263,7 @@ static CALI_BPF_INLINE __attribute__((noreturn)) void bpf_exit(int rc) {
 #endif
 #define ip_is_dnf(ip) (true)
 #define ip_is_frag(ip) (false)
+#define ip_is_frag_no_l4(ip) (false)
 
 #else
 
@@ -277,6 +278,12 @@ static CALI_BPF_INLINE __attribute__((noreturn)) void bpf_exit(int rc) {
 #define ip_is_frag(ip) ((ip)->frag_off & bpf_htons(0x3fff))
 #define ip_is_first_frag(ip) (((ip)->frag_off & bpf_htons(0x3fff)) == bpf_htons(0x2000))
 #define ip_is_last_frag(ip) (!((ip)->frag_off & bpf_htons(0x2000)))
+/* ip_is_frag_no_l4() is true for a fragment with a non-zero fragment offset,
+ * that is, a fragment that does not carry the L4 header. Such a fragment may be
+ * shorter than the L4 header we would normally insist on being able to access -
+ * the last fragment of a datagram may carry as little as 1 byte of payload.
+ */
+#define ip_is_frag_no_l4(ip) ((ip)->frag_off & bpf_htons(0x1fff))
 #endif
 
 #ifndef IP_FMT
