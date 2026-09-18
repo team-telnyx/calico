@@ -147,3 +147,5 @@ jobs:
       - name: Report the image reference
         run: |
           echo "pushed: ghcr.io/team-telnyx/calico/node:${{ steps.tag.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+
+# baseline run: unpatched release-v3.32, to separate environment failures from the patch.
