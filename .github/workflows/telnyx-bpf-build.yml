@@ -80,13 +80,15 @@ jobs:
           retention-days: 14
 
   # Loads the real objects into the kernel, i.e. this is what puts the patch in
-  # front of the actual eBPF verifier. Non-blocking at first: if the hosted
-  # runners cannot do it, read the log and then decide whether to drop the job.
+  # front of the actual eBPF verifier.  Keep this on the older hosted-runner
+  # kernel: ubuntu-latest currently uses Azure kernel 6.17, where the unchanged
+  # Calico baseline returns BPF_FIB_LKUP_RET_NOT_FWDED for IPv6 FIB lookups.
+  # The job is blocking so a real BPF regression cannot be hidden by the
+  # workflow's overall conclusion.
   bpf-ut:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: build-bpf
     timeout-minutes: 90
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
