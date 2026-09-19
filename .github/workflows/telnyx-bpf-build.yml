@@ -240,6 +240,9 @@ jobs:
       - name: Verify exact product source
         run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
 
+      - name: Configure upstream remote for generated-code checks
+        run: git remote add projectcalico https://github.com/projectcalico/calico.git
+
       - name: Free disk space
         run: |
           set -eux
@@ -255,12 +258,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check whether this image set is already staged
+        id: staged
+        run: |
+          set -eu
+          missing=false
+          for image in $COMPONENT_IMAGES; do
+            if ! docker manifest inspect "$STAGING_REGISTRY/$image:$IMAGE_TAG" > /dev/null 2>&1; then
+              missing=true
+            fi
+          done
+          echo "missing=$missing" >> "$GITHUB_OUTPUT"
+
       - name: Build ${{ matrix.component }} image set
+        if: steps.staged.outputs.missing == 'true'
         run: |
           set -eux
           make -C "${{ matrix.dir }}" image ARCH=amd64 $MAKE_ARGS
 
       - name: Stage operator image names on ghcr.io
+        if: steps.staged.outputs.missing == 'true'
         run: |
           set -eux
           for image in $COMPONENT_IMAGES; do
