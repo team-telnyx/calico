@@ -34,12 +34,17 @@ on:
         description: "Build and stage every Linux image accepted by operator v1.42.6 (except the already-published node image)"
         type: boolean
         default: false
+      export_images:
+        description: "Export the staged image set as short-lived artifacts for authenticated internal-registry promotion"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   build-bpf:
+    if: github.event_name != 'workflow_dispatch' || !inputs.export_images
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -289,3 +294,61 @@ jobs:
             docker manifest inspect "$target_ref" > /dev/null
             echo "$image -> $target_ref" >> "$GITHUB_STEP_SUMMARY"
           done
+
+  export-images:
+    if: github.event_name == 'workflow_dispatch' && inputs.export_images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        image:
+          - apiserver
+          - cni
+          - kube-controllers
+          - typha
+          - goldmane
+          - pod2daemon-flexvol
+          - csi
+          - node-driver-registrar
+          - key-cert-provisioner
+          - guardian
+          - whisker
+          - whisker-backend
+          - webhooks
+          - istio-install-cni
+          - istio-pilot
+          - istio-proxyv2
+          - istio-ztunnel
+          - envoy-gateway
+          - envoy-proxy
+          - envoy-ratelimit
+    env:
+      IMAGE_TAG: v3.32.2-telnyx-frag-6880df999
+      STAGING_REGISTRY: ghcr.io/team-telnyx/calico
+    steps:
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull and export ${{ matrix.image }}
+        run: |
+          set -eux
+          ref="$STAGING_REGISTRY/${{ matrix.image }}:$IMAGE_TAG"
+          docker pull "$ref"
+          docker save --output "${{ matrix.image }}.tar" "$ref"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: calico-image-${{ matrix.image }}
+          path: ${{ matrix.image }}.tar
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
