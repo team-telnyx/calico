@@ -58,7 +58,7 @@ func TestIP4Defrag(t *testing.T) {
 
 	ip.Flags = layers.IPv4MoreFragments
 	ip.FragOffset = 0
-	ip.Length = 20 + 8 + 1596
+	ip.Length = uint16(20 + 8 + dataLen)
 
 	payload = gopacket.Payload(data[dataOffset : dataOffset+dataLen])
 	_ = udp.SetNetworkLayerForChecksum(&ip)

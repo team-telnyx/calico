@@ -39,7 +39,7 @@ CALI_MAP(cali_v4_frgtmp, 2,
 		__u32, struct frags4_value,
 		1, 0)
 
-CALI_MAP(cali_v4_frgfwd, 3, BPF_MAP_TYPE_LRU_HASH, struct frags4_fwd_key, struct frags4_fwd_value, 10000, 0)
+CALI_MAP(cali_v4_frgfwd, 4, BPF_MAP_TYPE_LRU_HASH, struct frags4_fwd_key, struct frags4_fwd_value, 10000, 0)
 
 struct frags4_fwd_key {
 	ipv4_addr_t src;
@@ -49,10 +49,17 @@ struct frags4_fwd_key {
 	__u16 __pad;
 };
 
+/* The first fragment did not get forwarded by the BPF FIB lookup, it was passed
+ * to the host IP stack (CALI_ST_SKIP_FIB, NAT outgoing, ...). All the other
+ * fragments of the datagram must follow it, see frags4_record_ct().
+ */
+#define FRAGS4_FWD_FLAG_NO_FIB	0x1
+
 struct frags4_fwd_value {
 	__u16 sport;
 	__u16 dport;
 	__u32 seen_mark;
+	__u32 flags;
 };
 
 static CALI_BPF_INLINE struct frags4_value *frags4_get_scratch()
@@ -291,6 +298,15 @@ static CALI_BPF_INLINE void frags4_record_ct(struct cali_tc_ctx *ctx)
 		.sport = ctx->state->sport,
 		.dport = ctx->state->dport,
 		.seen_mark = ctx->state->fwd.mark,
+		/* Whether this fragment goes through the BPF FIB or through the host IP
+		 * stack was decided from its conntrack entry / policy result. The other
+		 * fragments carry no L4 header, never get that far and used to be
+		 * forwarded by the FIB unconditionally. When the two disagree, the first
+		 * fragment sits in the host's defragmentation queue (nf_defrag_ipv4)
+		 * waiting for fragments that were redirected straight to the wire, and
+		 * the datagram is lost.
+		 */
+		.flags = fwd_fib(&ctx->state->fwd) ? 0 : FRAGS4_FWD_FLAG_NO_FIB,
 	};
 
 	cali_v4_frgfwd_update_elem(&k, &v, 0);
