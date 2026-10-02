@@ -1726,6 +1726,111 @@ func TestNATNodePortICMPTooBig(t *testing.T) {
 	resetCTMap(ctMap)
 }
 
+// TestNATEstablishedBounceICMPTooBig reproduces projectcalico/calico#12432:
+// an ESTABLISHED DNAT flow whose backend lives on another node bounces via the
+// eBPF VXLAN tunnel. Full-size established segments (1476B inner on a
+// 1500-underlay, i.e. > tunnel_mtu) were encapsulated into oversize outer
+// frames with NO ICMP emitted (nat_encap: label had no too-big guard), so the
+// underlay silently blackholed them. After the fix every packet entering
+// nat_encap is measured; oversize ones must trigger ICMP frag-needed with
+// mtu=tunnel_mtu so the sender shrinks its MSS.
+func TestNATEstablishedBounceICMPTooBig(t *testing.T) {
+	RegisterTestingT(t)
+
+	// Build a full-size packet: inner IP payload == natTunnelMTU so that
+	// skb->len (14 + 20 + 8 + payload) exceeds 14 + tunnel_mtu.
+	_, ipv4, l4, _, pktBytes, err := testPacketV4(nil, nil, nil, make([]byte, natTunnelMTU))
+	Expect(err).NotTo(HaveOccurred())
+	udp := l4.(*layers.UDP)
+
+	natMap := nat.FrontendMap()
+	err = natMap.EnsureExists()
+	Expect(err).NotTo(HaveOccurred())
+
+	natBEMap := nat.BackendMap()
+	err = natBEMap.EnsureExists()
+	Expect(err).NotTo(HaveOccurred())
+
+	err = natMap.Update(
+		nat.NewNATKey(ipv4.DstIP, uint16(udp.DstPort), uint8(ipv4.Protocol)).AsBytes(),
+		nat.NewNATValue(0, 1, 0, 0).AsBytes(),
+	)
+	Expect(err).NotTo(HaveOccurred())
+
+	natIP := net.IPv4(8, 8, 8, 8)
+	natPort := uint16(666)
+
+	err = natBEMap.Update(
+		nat.NewNATBackendKey(0, 0).AsBytes(),
+		nat.NewNATBackendValue(natIP, natPort).AsBytes(),
+	)
+	Expect(err).NotTo(HaveOccurred())
+
+	node2IP := net.IPv4(3, 3, 3, 3)
+	node2wCIDR := net.IPNet{
+		IP:   natIP,
+		Mask: net.IPv4Mask(255, 255, 255, 0),
+	}
+
+	rtMap := routes.Map()
+	err = rtMap.EnsureExists()
+	Expect(err).NotTo(HaveOccurred())
+	defer resetRTMap(rtMap)
+	err = rtMap.Update(
+		routes.NewKey(ip.CIDRFromIPNet(&node2wCIDR).(ip.V4CIDR)).AsBytes(),
+		routes.NewValueWithNextHop(routes.FlagsRemoteWorkload|routes.FlagInIPAMPool,
+			ip.FromNetIP(node2IP).(ip.V4Addr)).AsBytes(),
+	)
+	Expect(err).NotTo(HaveOccurred())
+
+	ctMap := conntrack.Map()
+	err = ctMap.EnsureExists()
+	Expect(err).NotTo(HaveOccurred())
+	resetCTMap(ctMap) // ensure it is clean
+
+	hostIP = node1ip
+	skbMark = 0
+
+	// First (small) packet: creates the established NAT-forward CT entry
+	// that will bounce to node2 - this one is small enough to fit.
+	// testPacketV4 uses the same default 5-tuple for both packets, so the
+	// big packet below hits the established entry created here.
+	_, _, _, _, smallPkt, err := testPacketV4(nil, nil, nil, make([]byte, 64))
+	Expect(err).NotTo(HaveOccurred())
+
+	runBpfTest(t, "calico_from_host_ep", nil, func(bpfrun bpfProgRunFn) {
+		res, err := bpfrun(smallPkt)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RetvalStr()).To(Equal("TC_ACT_UNSPEC"), "expected program to return TC_ACT_UNSPEC")
+	})
+
+	// CT must now hold an established forward entry for the flow.
+	ct, err := conntrack.LoadMapMem(ctMap)
+	Expect(err).NotTo(HaveOccurred())
+	ctKey := conntrack.NewKey(uint8(ipv4.Protocol), ipv4.SrcIP, uint16(udp.SrcPort), ipv4.DstIP, uint16(udp.DstPort))
+	ctr, ok := ct[ctKey]
+	Expect(ok).To(BeTrue(), "expected established CT entry after first packet")
+	Expect(ctr.Type()).To(Equal(conntrack.TypeNATForward))
+
+	// Second packet: ESTABLISHED hit, full-size, must NOT be encapped
+	// oversize - the nat_encap guard must fire ICMP frag-needed instead.
+	runBpfTest(t, "calico_from_host_ep", nil, func(bpfrun bpfProgRunFn) {
+		res, err := bpfrun(pktBytes)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RetvalStr()).To(Equal("TC_ACT_UNSPEC"), "expected program to return TC_ACT_UNSPEC")
+
+		pktR := gopacket.NewPacket(res.dataOut, layers.LayerTypeEthernet, gopacket.Default)
+		fmt.Printf("pktR = %+v\n", pktR)
+
+		checkICMPTooBig(pktR, ipv4, udp, ipv4.DstIP, natTunnelMTU)
+	})
+
+	expectMark(tcdefs.MarkSeenBypassForward)
+
+	// clean up
+	resetCTMap(ctMap)
+}
+
 // TestNormalSYNRetryForcePolicy does the same test for forcing policy
 // as TestNATSYNRetryGoesToSameBackend but without NAT.
 func TestNormalSYNRetryForcePolicy(t *testing.T) {

@@ -1259,9 +1259,38 @@ nat_encap:
 		}
 	}
 
+	/* Bounce MTU guard: measure EVERY packet that is about to be
+	 * encapsulated, not just the ones that happen to pass through the
+	 * too-big checks in the CT branches above. Production captures
+	 * (projectcalico/calico#12432) show full-size established segments
+	 * being encapped into 1476+50=1526B outer frames on a 1500MTU
+	 * underlay with ZERO ICMP emitted - the per-flow checks never fire
+	 * for these paths and the underlay blackholes the oversize frame.
+	 *
+	 * Emitting ICMP frag-needed (mtu=tunnel_mtu) is the RFC1191-correct
+	 * feedback: the client stack shrinks its MSS and subsequent
+	 * segments fit under the tunnel.
+	 */
+	if (skb_is_gso(ctx->skb)) {
+		/* GSO: check the per-segment size, the wire frame each
+		 * segment becomes is gso_size + L4/L3 headers + encap
+		 * overhead. gso_size is payload-only.
+		 */
+		if (ctx->skb->gso_size + sizeof(struct iphdr) +
+		    sizeof(struct tcphdr) + sizeof(struct ethhdr) >
+		    TUNNEL_MTU + sizeof(struct ethhdr)) {
+			CALI_DEBUG("GSO seg too big for tunnel: gso_size=%d",
+				   ctx->skb->gso_size);
+			goto icmp_too_big;
+		}
+	} else if (vxlan_encap_too_big(ctx)) {
+		CALI_DEBUG("SKB too big for tunnel: len=%d", ctx->skb->len);
+		goto icmp_too_big;
+	}
+
 	/* Trivial hash to use multiple vxlan flows. Note that any value will do
-	 * as long as it is a constant for this direction of the flow. Does not
-	 * even need to be the same for both directions.
+	 * as long as it is a constant for this direction of the flow. Does
+	 * not even need to be the same for both directions.
 	 *
 	 * ICMP does not have ports, but there is little to no worries about a
 	 * possible out-of-order processing in relation to the related flow.
